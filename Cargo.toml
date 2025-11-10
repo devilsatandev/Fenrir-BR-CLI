@@ -9,6 +9,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.37.0", features = ["full"] }
 
-# --- ADIÇÃO DA TIA ---
-# Pra gente botar data e hora no log, que nem gente grande.
 chrono = "0.4"
