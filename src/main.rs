@@ -1,203 +1,357 @@
-use std::collections::HashMap;
-use std::env;
-use std::io;
-use std::path::Path;
-use std::process::Command;
-use std::thread;
-use std::time::{Duration, Instant};
-use regex::Regex;
-use strsim::levenshtein;
+use chrono::Local;
 use indicatif::{ProgressBar, ProgressStyle};
-fn main() {
-    let mut args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        println!("Ei, véi! Uso: fenrir <comando em PT natural>");
-        println!("Ex: fenrir abre pasta ~/kali-cli/src/");
-        println!("Ou: fenrir abre kali-cli/src e roda main.rs no rustrover");
-        println!("Pra interativo, rode sem args.");
-        interativo();
-        return;
-    }
+use serde::{Deserialize, Serialize}; // A gente ainda usa pro LOG, mas não pro parser
+use std::env;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::process::Command; // Usa o Command do Tokio
+use tokio::task; // Pra rodar o input síncrono sem travar
 
-    args.remove(0);
-    let comando_natural = args.join(" ").to_lowercase();
-
-    let re_abre_pasta = Regex::new(r"abre pasta (.+)").unwrap();
-    let re_abre_e_roda = Regex::new(r"abre (.+) e roda (.+) no (.+)").unwrap();
-
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(ProgressStyle::default_spinner()
-        .template("{spinner:.green} [{elapsed_precise}] Processando... {msg}")
-        .unwrap());
-    pb.enable_steady_tick(Duration::from_millis(100));
-
-    let handle = thread::spawn(move || {
-        if let Some(caps) = re_abre_pasta.captures(&comando_natural) {
-            let pasta = caps.get(1).unwrap().as_str();
-            abrir_pasta_fuzzy(pasta);
-        } else if let Some(caps) = re_abre_e_roda.captures(&comando_natural) {
-            let pasta = caps.get(1).unwrap().as_str();
-            let arquivo = caps.get(2).unwrap().as_str();
-            let app = caps.get(3).unwrap().as_str();
-            abrir_pasta_fuzzy(pasta);
-            rodar_arquivo_em_app_fuzzy(arquivo, app);
-        } else if comando_natural.contains("e") {
-            let comandos = comando_natural.replace("e", "&&").split("&&").map(|s| s.trim().to_string()).collect::<Vec<_>>();
-            for cmd in comandos {
-                executar_comando_simples(&cmd);
-            }
-        } else {
-            println!("Ops, não entendi essa, véi. Explica de novo? Tipo 'abre pasta X' ou 'roda Y no Z'.");
-            interativo();
-        }
-
-        let explicacoes = carregar_explicacoes();
-        if let Some(explicacao) = explicacoes.get(&comando_natural) {
-            println!("{}", explicacao);
-        }
-    });
-
-    let start = Instant::now();
-    loop {
-        if handle.is_finished() {
-            pb.finish_with_message("Pronto!");
-            break;
-        }
-        if start.elapsed() > Duration::from_secs(66) {
-            pb.finish_with_message("Timeout! Tentando de novo...");
-            println!("Timeout após 66s, reiniciando processo.");
-            // Aqui poderia kill thread, mas pra simples: drop handle e rerun logic
-            // Pra real: use channels ou tokio, mas hardcore std
-            main(); // Recursa uma vez (cuidado stack, mas pra demo ok)
-            return;
-        }
-        thread::sleep(Duration::from_millis(500));
-    }
+// --- NOSSO CONTRATO INTERNO ---
+// A gente ainda usa o struct, pq é organizado pra porra.
+// Mas agora a gente PREENCHE ele na mão, lendo o MD.
+#[derive(Serialize, Deserialize, Debug, Default)] // Adicionei Default
+struct FenrirTask {
+    task_type: String,
+    ia_explanation: String,
+    command_to_run: Option<String>,
+    target_path: Option<String>,
+    application: Option<String>,
 }
 
-fn abrir_pasta_fuzzy(pasta: &str) {
-    let caminho = fuzzy_search_path(pasta);
-    if caminho.is_empty() {
-        println!("Não achei pasta parecida com '{}', véi.", pasta);
-        return;
-    }
-    let status = Command::new("xdg-open")
-        .arg(&caminho)
-        .status();
-    match status {
-        Ok(_) => println!("Abri a pasta {} aí, véi!", caminho),
-        Err(_) => println!("Deu ruim abrindo {}, verifica?", caminho),
-    }
-}
+// --- CONSTANTES ---
+const TIMEOUT_SEGUNDOS: Duration = Duration::from_secs(60);
+const LOG_FILE: &str = "fenrir_tasks.log";
 
-fn rodar_arquivo_em_app_fuzzy(arquivo: &str, app: &str) {
-    let arquivo_path = fuzzy_search_path(arquivo);
-    if arquivo_path.is_empty() {
-        println!("Não achei arquivo parecida com '{}', véi.", arquivo);
-        return;
-    }
-    let app_cmd = match app {
-        "rustrover" => "rustrover",
-        _ => app,
-    };
-    let status = Command::new(app_cmd)
-        .arg(&arquivo_path)
-        .status();
-    match status {
-        Ok(_) => println!("Rodando {} no {} agora!", arquivo_path, app),
-        Err(_) => println!("Não rolou rodar {} no {}, verifica PATH?", arquivo_path, app),
-    }
-}
+#[tokio::main]
+async fn main() {
+    let args: Vec<String> = env::args().collect();
+    let pb = ProgressBar::new_spinner(); // Spinner pra gente ver rodando
 
-fn fuzzy_search_path(query: &str) -> String {
-    let home = env::var("HOME").unwrap_or(".".to_string());
-    let base_dir = if query.starts_with("~") { home } else { ".".to_string() };
-    let path = Path::new(&base_dir);
-
-    if let Ok(entries) = std::fs::read_dir(path) {
-        let mut best_match = String::new();
-        let mut best_score = 0.0;
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let name = entry.file_name().to_string_lossy().to_string();
-                let dist = levenshtein(query, &name) as f64 / query.len().max(name.len()) as f64;
-                let score = 1.0 - dist; // Similaridade
-                if score > best_score && score > 0.7 { // Threshold comprovado empiricamente
-                    best_score = score;
-                    best_match = entry.path().to_string_lossy().to_string();
-                }
-            }
-        }
-        best_match
+    if args.len() > 1 {
+        // Modo "um comando e vaza"
+        let consulta_completa = args[1..].join(" ");
+        processar_solicitacao(&consulta_completa, &pb).await;
     } else {
-        String::new()
+        // Modo interativo
+        println!("Ei, cara! Modo interativo do Fenrir.");
+        println!("Manda a braba (ou 'sair' pra vazar).");
+        interativo(&pb).await;
     }
 }
 
-fn executar_comando_simples(cmd: &str) {
-    if cmd.contains("ls") {
-        Command::new("ls").status().unwrap();
-    } else {
-        println!("Comando simples '{}' não suportado ainda, véi.", cmd);
-    }
-}
-
-fn interativo() {
-    println!("Modo interativo! Digita o comando natural, ou 'sair'.");
+async fn interativo(pb: &ProgressBar) {
     let stdin = io::stdin();
-    for linha in stdin.lines() {
-        match linha {
-            Ok(input) => {
-                let trimado = input.trim().to_lowercase();
-                if trimado == "sair" { break; }
-                println!("Processando: {}", trimado);
+    let mut input_buffer = String::new();
+
+    loop {
+        input_buffer.clear();
+        match stdin.read_line(&mut input_buffer) {
+            Ok(0) => break, // Fim da entrada (Ctrl+D)
+            Ok(_) => {
+                let trimado = input_buffer.trim().to_lowercase();
+                if trimado.is_empty() {
+                    continue;
+                }
+                if trimado == "sair" || trimado == "exit" {
+                    println!("Falou, parceiro! Até a próxima.");
+                    break;
+                }
+
+                // Se não for "sair", é pro Oráculo!
+                processar_solicitacao(&trimado, pb).await;
+                println!("\nPróxima? (ou 'sair' pra vazar)");
             }
-            Err(_) => break,
+            Err(e) => {
+                eprintln!("Oxe! Deu erro lendo sua entrada: {}", e);
+                break;
+            }
         }
     }
 }
 
-fn carregar_explicacoes() -> HashMap<String, String> {
-    let mut map: HashMap<String, String> = HashMap::new();
-    // Preencha como no original: navegação, ls, etc. (copia do teu código antigo aqui)
-    map.insert("navegação".to_string(), "Ei, navegação no terminal é tipo passear pela sua máquina. Os principais:\n- ls: Lista os arquivos e pastas no diretório atual, tipo 'o que tem aqui?'\n- cd: Muda de pasta, como 'cd documentos' pra entrar na pasta documentos.\n- pwd: Mostra onde você tá agora, o caminho completo.\n- mkdir: Cria uma pasta nova, 'mkdir nova_pasta'.\n- rmdir: Remove pasta vazia, mas usa com cuidado.".to_string());
-    // ... adicione o resto do map igual antes, pra completo
-    map.insert("ls".to_string(), "ls: Esse é o cara que lista tudo no diretório. Tipo, 'ls -l' pra detalhes, 'ls -a' pra arquivos escondidos. Simples e útil pra ver o que rola por aí.".to_string());
-    map.insert("cd".to_string(), "cd: Muda de diretório. 'cd ..' sobe um nível, 'cd /' vai pra raiz. É como teleportar pela sua máquina.".to_string());
-    map.insert("pwd".to_string(), "pwd: Print Working Directory. Mostra o caminho atual, tipo 'onde diabos eu tô?' Resposta rápida.".to_string());
-    map.insert("mkdir".to_string(), "mkdir: Cria diretório. 'mkdir -p caminho/nova/pasta' cria tudo no caminho se não existir. Criativo, né?".to_string());
-    map.insert("rmdir".to_string(), "rmdir: Remove diretório vazio. Pra pastas cheias, melhor usar rm -r.".to_string());
+// --- O CÉREBRO DO FENRIR ---
+async fn processar_solicitacao(consulta: &str, pb: &ProgressBar) {
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .tick_strings(&["VAI", "CORNO!", "PENSE", "DESGRAÇA!", "...", "VAI", "LOGO", "CARALHO!", "(ノ°Д°）ノ", "┻━┻", "...", "VAI", "CORNO!"])
+            .template("{spinner:.bold.yellow} {msg}")
+            .unwrap(),
+    );
+    pb.set_message("Chamando o Oráculo (Gemini)...");
+    pb.enable_steady_tick(Duration::from_millis(150));
 
-    // Edição
-    map.insert("edição".to_string(), "Edição de arquivos no terminal é pros valentes. Principais editores:\n- nano: Simples, amigável, 'nano arquivo.txt' e edita.\n- vim: Poderoso, mas curva de aprendizado. 'vim arquivo' pra entrar, i pra inserir, esc :wq pra salvar e sair.\n- vi: Versão básica do vim.\n- cat: Não edita, mas mostra conteúdo. 'cat arquivo'.\n- echo: Insere texto simples, 'echo 'oi' > arquivo'.".to_string());
-    map.insert("nano".to_string(), "nano: Editor fácil. Abre com 'nano arquivo', edita, ctrl+o salva, ctrl+x sai. Perfeito pra iniciantes.".to_string());
-    map.insert("vim".to_string(), "vim: Editor avançado. Modos: normal, insert (i), visual (v). Salva com :w, sai :q. 'vimtutor' pra aprender.".to_string());
-    map.insert("vi".to_string(), "vi: Versão old school do vim. Mesmos comandos basicamente.".to_string());
-    map.insert("cat".to_string(), "cat: Concatena e mostra arquivos. 'cat arquivo1 arquivo2 > novo' junta eles.".to_string());
-    map.insert("echo".to_string(), "echo: Ecoa texto. 'echo 'hello' >> arquivo' adiciona no final sem apagar.".to_string());
+    match chamar_gemini_com_timeout(consulta).await {
+        Ok(task) => {
+            // Oráculo respondeu!
+            pb.finish_with_message("! Oráculo respondeu!");
 
-    // Abertura
-    map.insert("abertura".to_string(), "Abrir coisas: Depende do sistema, mas comuns:\n- open: No mac, abre arquivos ou apps. 'open arquivo.pdf'.\n- xdg-open: No Linux, similar.\n- less: Abre pra leitura paginada, 'less arquivo'.\n- more: Similar ao less, mas mais simples.".to_string());
-    map.insert("open".to_string(), "open: Abre arquivos no app padrão. Útil no macOS.".to_string());
-    map.insert("xdg-open".to_string(), "xdg-open: Abre no Linux com o app padrão.".to_string());
-    map.insert("less".to_string(), "less: Visualizador paginado. q pra sair.".to_string());
-    map.insert("more".to_string(), "more: Visualizador antigo, página por página.".to_string());
+            // 1. Loga a tarefa ANTES de executar
+            if let Err(e) = log_task(&task) {
+                eprintln!("Xii, deu erro pra logar a tarefa: {}", e);
+            }
 
-    // Fechamento
-    map.insert("fechamento".to_string(), "Fechar processos ou sessões:\n- kill: Mata processo por PID, 'kill 1234'.\n- killall: Mata por nome, 'killall chrome'.\n- exit: Sai do terminal ou shell.\n- ctrl+c: Interrompe comando rodando.".to_string());
-    map.insert("kill".to_string(), "kill: Envia sinal pra processo. 'kill -9 PID' força matar.".to_string());
-    map.insert("killall".to_string(), "killall: Mata todos processos com nome dado.".to_string());
-    map.insert("exit".to_string(), "exit: Sai do shell atual.".to_string());
+            // 2. O FREIO DE MÃO (Pavê ou pa executá?)
+            let acao_proposta = format!(
+                "O Oráculo sugeriu: '{}' \nTipo: '{}' \nComando: '{}' \nArquivo: '{}'",
+                task.ia_explanation,
+                task.task_type,
+                task.command_to_run.as_deref().unwrap_or("N/A"),
+                task.target_path.as_deref().unwrap_or("N/A")
+            );
 
-    // Inserção
-    map.insert("inserção".to_string(), "Inserir ou copiar:\n- cp: Copia arquivos, 'cp origem destino'.\n- mv: Move ou renomeia, 'mv velho novo'.\n- touch: Cria arquivo vazio, 'touch novo.txt'.\n- echo >: Insere em arquivo novo.".to_string());
-    map.insert("cp".to_string(), "cp: Copia. 'cp -r pasta destino' pra recursivo.".to_string());
-    map.insert("mv".to_string(), "mv: Move. Também renomeia se no mesmo lugar.".to_string());
-    map.insert("touch".to_string(), "touch: Cria ou atualiza timestamp de arquivo.".to_string());
+            println!("\n--- PROPOSTA DO ORÁCULO ---");
+            println!("{}", acao_proposta);
+            println!("-----------------------------");
 
-    // Remoção
-    map.insert("remoção".to_string(), "Remover com cuidado, hein:\n- rm: Remove arquivos, 'rm arquivo'.\n- rm -r: Remove pastas recursivamente.\n- rm -f: Força sem perguntar.".to_string());
-    map.insert("rm".to_string(), "rm: Remove. 'rm -rf /' é piada perigosa, não faz isso!".to_string());
+            let confirmacao = ask_for_confirmation("Executa essa porra? (s/n):").await;
 
-    map
+            if confirmacao {
+                println!("Ok, segurando o volante...");
+                // 3. O Executor (As "Mãos" do Fenrir)
+                match task.task_type.as_str() {
+                    "execute_command" => {
+                        if let Some(cmd) = task.command_to_run {
+                            handle_execute_command(&cmd);
+                        } else {
+                            eprintln!("Erro: Oráculo mandou 'execute_command' mas não mandou o comando!");
+                        }
+                    }
+                    "open_editor" => {
+                        if let (Some(path), Some(app)) = (task.target_path, task.application) {
+                            handle_open_editor(&app, &path);
+                        } else {
+                            eprintln!("Erro: Oráculo mandou 'open_editor' mas faltou o app ou o arquivo!");
+                        }
+                    }
+                    "unknown" | _ => {
+                        println!("O Oráculo não entendeu o que fazer. (Disse: '{}')", task.ia_explanation);
+                    }
+                }
+            } else {
+                println!("Ação cancelada. Sabonetou!");
+            }
+        }
+        Err(e) => {
+            // Deu ruim no Oráculo
+            pb.finish_with_message("! DEU RUIM!");
+            eprintln!("Ops! Deu ruim na comunicação com o Oráculo: {}", e);
+        }
+    }
+}
+
+// --- O ORÁCULO (GEMINI) ---
+// Chama o 'gemini' e força ele a devolver nosso MARKDOWN.
+async fn chamar_gemini_com_timeout(consulta: &str) -> Result<FenrirTask, String> {
+
+    // --- O NOVO META-PROMPT (MARKDOWN, DESGRAÇA!) ---
+    let meta_prompt = format!(
+r#"
+Você é um Oráculo para um CLI em Rust chamado Fenrir.
+Sua ÚNICA função é traduzir a linguagem natural do usuário em uma FICHA DE TAREFA em formato Markdown.
+NÃO responda com explicações. NÃO converse. APENAS A FICHA.
+Use 'N/A' para campos não aplicáveis.
+
+O formato da Ficha é:
+TAREFA: [execute_command | open_editor | unknown]
+EXPLICACAO: [O que você entendeu que o usuário quer, em português.]
+COMANDO: [O comando shell completo. (N/A se não for 'execute_command')]
+ARQUIVO: [O arquivo ou pasta alvo. (N/A se não for 'open_editor')]
+APP: [O aplicativo para abrir. (N/A se não for 'open_editor')]
+
+Exemplos:
+Consulta: 'liste os arquivos da pasta atual'
+Ficha:
+TAREFA: execute_command
+EXPLICACAO: O usuário quer listar os arquivos na pasta atual.
+COMANDO: ls -l
+ARQUIVO: N/A
+APP: N/A'
+'
+Consulta: 'abre o main.rs no rustrover'
+Ficha:
+TAREFA: open_editor
+EXPLICACAO: O usuário quer abrir o arquivo 'main.rs' no 'rustrover'.
+COMANDO: N/A
+ARQUIVO: main.rs
+APP: rustrover
+
+Consulta: 'apaga a porra toda'
+Ficha:
+TAREFA: execute_command
+EXPLICACAO: O usuário quer deletar tudo recursivamente (CUIDADO!).
+COMANDO: rm -rf /
+ARQUIVO: N/A
+APP: N/A
+
+Consulta: 'quantos pau tem uma canoa'
+Ficha:
+TAREFA: unknown
+EXPLICACAO: O usuário fez uma pergunta aleatória que não é um comando.
+COMANDO: N/A
+ARQUIVO: N/A
+APP: N/A
+
+AGORA, A CONSULTA DO USUÁRIO É:
+'{consulta}'
+
+GERE APENAS A FICHA DE TAREFA.
+"#,
+        consulta = consulta
+    );
+
+    // 2. Define a 'future' (a "promessa" de rodar o comando)
+    let cmd_future = Command::new("gemini") // O COMANDO QUE TU ME DISSE
+        .arg(meta_prompt) // Passa o promptão como argumento
+        .stdout(Stdio::piped()) // Pega a saida (stdout)
+        .stderr(Stdio::piped()) // Pega o erro (stderr)
+        .output(); // Roda e espera
+
+    // 3. Roda com o timeout
+    match tokio::time::timeout(TIMEOUT_SEGUNDOS, cmd_future).await {
+        Ok(Ok(output)) => {
+            // Gemini respondeu a tempo
+            if output.status.success() {
+                let saida_str = String::from_utf8_lossy(&output.stdout).to_string();
+
+                // --- O NOVO PARSER (CADERNINHO DE FIADO) ---
+                // Chega de 'serde_json'. Vamos ler linha por linha.
+
+                let mut task = FenrirTask::default(); // Cria uma task vazia
+                task.task_type = "unknown".to_string(); // Começa como 'unknown'
+
+                for line in saida_str.lines() {
+                    // Pega "CHAVE: VALOR" e quebra no *primeiro* ':'
+                    if let Some((key, value)) = line.split_once(':') {
+                        let key = key.trim();
+                        let value = value.trim();
+
+                        match key {
+                            "TAREFA" => task.task_type = value.to_string(),
+                            "EXPLICACAO" => task.ia_explanation = value.to_string(),
+                            "COMANDO" if value != "N/A" => task.command_to_run = Some(value.to_string()),
+                            "ARQUIVO" if value != "N/A" => task.target_path = Some(value.to_string()),
+                            "APP" if value != "N/A" => task.application = Some(value.to_string()),
+                            _ => {} // Ignora linha lixo ou "N/A"
+                        }
+                    }
+                }
+
+                // Se depois de tudo, a explicação tá vazia, deu merda.
+                if task.ia_explanation.is_empty() {
+                    Err(format!("Oráculo não devolveu uma Ficha Markdown válida. \nSaída crua: '{}'", saida_str))
+                } else {
+                    Ok(task) // SUCESSO!
+                }
+
+            } else {
+                // Gemini rodou, mas deu erro (ex: API key errada)
+                let erro_str = String::from_utf8_lossy(&output.stderr).to_string();
+                Err(format!(
+                    "O processo 'gemini' deu erro (stderr): {}",
+                    erro_str
+                ))
+            }
+        }
+        Ok(Err(e)) => {
+            // Erro ao TENTAR rodar o 'gemini' (ex: não achou o comando)
+            Err(format!(
+                "Falha ao executar o processo 'gemini'. Tá instalado? Tá no PATH? Erro: {}",
+                e
+            ))
+        }
+        Err(_) => {
+            // Timeout!
+            Err("Tente novamente, tempo esgotado.".to_string())
+        }
+    }
+}
+
+
+// --- LOG E FREIO DE MÃO ---
+
+// Salva a tarefa no 'fenrir_tasks.log'
+// (Continua usando JSON pra logar, pq log JSON é bom pra 'brincar depois')
+fn log_task(task: &FenrirTask) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(LOG_FILE)?;
+
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let log_entry = format!(
+        "\n--- [ {} ] ---\n{}\n",
+        timestamp,
+        serde_json::to_string_pretty(task).unwrap_or("Erro ao serializar tarefa".to_string())
+    );
+
+    file.write_all(log_entry.as_bytes())
+}
+
+// Pergunta 's' ou 'n'
+async fn ask_for_confirmation(acao_proposta: &str) -> bool {
+    print!("{}", acao_proposta); // Mostra a pergunta
+    io::stdout().flush().unwrap(); // Força o 'print' a aparecer
+
+    // Ler input do usuário é síncrono (trava a thread)
+    // Então, a gente joga pra uma thread do 'tokio' não travar o runtime
+    let result = task::spawn_blocking(|| {
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap_or(0);
+        input.trim().to_lowercase()
+    })
+        .await; // Espera a thread síncrona terminar
+
+    match result {
+        Ok(input) => input == "s" || input == "sim",
+        Err(_) => false, // Se der erro na thread, cancela
+    }
+}
+
+
+// --- AS "MÃOS" DO FENRIR ---
+// Funções que REALMENTE fazem o trabalho sujo.
+
+// Executa um comando no shell
+fn handle_execute_command(comando: &str) {
+    println!("Rodando: '{}'...", comando);
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .arg("/C")
+            .arg(comando)
+            .spawn() // Usa spawn pra não travar o Fenrir
+    } else {
+        Command::new("sh") // Usa 'sh' (funciona em Mac e Linux)
+            .arg("-c")
+            .arg(comando)
+            .spawn() // Usa spawn pra não travar o Fenrir
+    };
+
+    match output {
+        Ok(_) => println!("Comando enviado pro terminal."),
+        Err(e) => eprintln!("Oxe! Deu erro ao TENTAR rodar o comando: {}", e),
+    }
+}
+
+// Abre um arquivo no editor
+fn handle_open_editor(app: &str, path: &str) {
+    println!("Tentando abrir '{}' no '{}'...", path, app);
+
+    // No macOS, é melhor usar 'open -a'
+    let cmd_para_rodar = if cfg!(target_os = "macos") && app == "rustrover" {
+        // Comando específico pro RustRover no macOS
+        format!("open -a RustRover \"{}\"", path)
+    } else if cfg!(target_os = "macos") {
+        // Comando genérico 'open' do macOS
+        format!("open -a \"{}\" \"{}\"", app, path)
+    } else {
+        // Comando genérico pra Linux/Windows
+        format!("{} \"{}\"", app, path)
+    };
+
+    // A gente chama o 'handle_execute_command' pra rodar o comando de abrir
+    println!("(Usando o comando: '{}')", cmd_para_rodar);
+    handle_execute_command(&cmd_para_rodar);
 }
