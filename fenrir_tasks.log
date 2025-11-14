@@ -1,0 +1,45 @@
+
+--- [ 2025-11-10 14:02:54 ] ---
+{
+  "task_type": "execute_command",
+  "ia_explanation": "O usuário quer listar os arquivos na pasta atual com detalhes.",
+  "command_to_run": "ls -l",
+  "target_path": null,
+  "application": null
+}
+
+--- [ 2025-11-10 15:39:05 ] ---
+{
+  "task_type": "execute_command",
+  "ia_explanation": "O usuário quer adicionar todas as alterações ao stage, fazer um commit com a mensagem \"modularizacao n sei o que la\" e depois enviar as alterações para o repositório remoto.",
+  "command_to_run": "git add -A && git commit -m \"modularizacao n sei o que la\" && git push",
+  "target_path": null,
+  "application": null
+}
+
+--- [ 2025-11-14 00:28:11 ] ---
+{
+  "task_type": "execute_command",
+  "ia_explanation": "O usuário quer adicionar todos os arquivos, commitar com a mensagem \"Novos brinquedos\", fazer push e criar um pull request.",
+  "command_to_run": "git add -A && git commit -m \"Novos brinquedos\" && git push",
+  "target_path": null,
+  "application": null
+}
+
+--- [ 2025-11-14 00:29:20 ] ---
+{
+  "task_type": "execute_command",
+  "ia_explanation": "O usuário quer criar um pull request para a branch 'master'.",
+  "command_to_run": "gh pr create --base master",
+  "target_path": null,
+  "application": null
+}
+
+--- [ 2025-11-14 00:32:04 ] ---
+{
+  "task_type": "execute_command",
+  "ia_explanation": "O usuário quer fazer um commit com a mensagem 'MVP Proxima semana novos tipos de tasks e fallback para erros' e dar push, para iniciar um pull request para a branch 'master'.",
+  "command_to_run": "git add . && git commit -m \"MVP Proxima semana novos tipos de tasks e fallback para erros\" && git push",
+  "target_path": null,
+  "application": null
+}
