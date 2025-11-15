@@ -1,0 +1,11 @@
+@@todo
+
+@task
+@high =  Fazer IA fight pra (preencher as tasks direito e mais de uma)
+@high = fazer o preenchmento de task ser recursivo ate tudo ser confirmado e a ia autoatizada a agir, usando tokyo e async para testar outrass alternativas 
+// # o gemini CLI primeiro recebe a task, encontre o contexto confirma com outro gemini, depois segmente entre caminho e request e confirma com ooutro gmini, mostra na tela, confirma, monta os comandos do fenrir e da ia, depois confirma e executa
+
+@critical = [Crar um switch case para tarefas complexas que falham no timeout para conferir se pode ser resolvida pela IA]
+@medium =  {Criar um sistema de tags para as tasks, para facilitar a busca no log}
+@low - {Logar os erros da IA em um arquivo separado para analise futura}
+@medium =  Implementar a [segmentaazcaoo de tarefas por tempo de execuacao] 

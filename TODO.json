@@ -1,0 +1,59 @@
+{
+  "todo": [
+    {
+      "id": 15896,
+      "text": "@critical = [Crar um switch case para tarefas complexas que falham no timeout para conferir se pode ser resolvida pela IA]",
+      "priority": 1,
+      "created": "2025-11-14T21:35:22.901Z"
+    },
+    {
+      "id": 16771,
+      "text": "@high =  Fazer IA fight pra (preencher as tasks direito e mais de uma)",
+      "priority": 1,
+      "created": "2025-11-14T21:35:17.985Z"
+    },
+    {
+      "id": 17003,
+      "text": "@high = fazer o preenchmento de task ser recursivo ate tudo ser confirmado e a ia autoatizada a agir, usando tokyo e async para testar outrass alternativas ",
+      "priority": 1,
+      "created": "2025-11-14T21:34:36.679Z"
+    },
+    {
+      "id": 14715,
+      "text": "@medium =  Implementar a [segmentaazcaoo de tarefas por tempo de execuacao] ",
+      "priority": 2,
+      "created": "2025-11-14T21:38:49.297Z"
+    },
+    {
+      "id": 17184,
+      "text": "@medium =  {Criar um sistema de tags para as tasks, para facilitar a busca no log}",
+      "priority": 2,
+      "created": "2025-11-14T21:38:47.109Z"
+    },
+    {
+      "id": 12345,
+      "text": "@low - Repetir a ultima entrada se falhar e sugerir alternativas de possiveis prompts baseados naquele.",
+      "priority": 4,
+      "created": "2025-11-14T21:39:00.000Z"
+    },
+    {
+      "id": 12346,
+      "text": "@low = Sugerir apps ou perguntal qual escolhe para abrir um arquivo caso nao tenha sido especificado um app para abrir o arquivo.",
+      "priority": 4,
+      "created": "2025-11-14T21:39:00.000Z"
+    },
+    {
+      "id": 12347,
+      "text": "@medium = Conferir se o arquivo existe antes de abrir, e perguntar se deseja criar um novo caso nao exista. Caso seja um editor ou app verificar o comando correto para invoca-lo como subtask",
+      "priority": 4,
+      "created": "2025-11-14T21:39:00.000Z"
+    },
+    {
+      "id": 12266,
+      "text": "@low - {Logar os erros da IA em um arquivo separado para analise futura}",
+      "priority": 4,
+      "created": "2025-11-14T21:38:39.586Z"
+    }
+  ],
+  "completed": []
+}

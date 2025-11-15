@@ -1,12 +1,21 @@
 [package]
 name = "fenrir"
 version = "0.1.0"
-edition = "2021"
+edition = "2024" # Mantendo o 2024 que tu botou no original
 
 [dependencies]
-indicatif = "0.17.7"
+# Pra barrinha de "VAI CORNO"
+indicatif = "0.17.7" 
+
+# Pro nosso "caderninho de fiado" (JSON)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.37.0", features = ["full"] }
 
-chrono = "0.4"
+# Pro "balé assíncrono" (o balé da capoeira, kkkk)
+tokio = { version = "1", features = ["full"] } 
+
+# Pra data e hora no log
+chrono = "0.4" 
+
+# Pro "telefonema" direto pra API (o "Plano 1000 Dólar")
+reqwest = { version = "0.11", features = ["json"] }

@@ -1,140 +1,134 @@
-// --- ARQUIVOS DE MÓDULO ---
-// A "cagada de junior" (tudo no main) ACABOU.
-// Declaramos os módulos que o Rust vai procurar.
-// (ex: 'mod oraculo' faz o Rust procurar 'src/oraculo.rs')
+// --- MODULE FILES ---
+// We declare the modules that Rust will look for.
 mod executor;
 mod oraculo;
 mod ferramentas;
 
-// --- IMPORTS (use) ---
-// Agora a gente chama as funções dos *nossos* módulos.
-
-
-// use crate::executor::{ask_for_confirmation, handle_execute_command, handle_open_editor, log_task};
-// use crate::oraculo::{chamar_gemini_com_timeout, FenrirTask};
-
+// --- IMPORTS ---
+use crate::executor::{fill_task_recursively, handle_execute_command_with_timeout, handle_open_editor, log_task};
+use crate::ferramentas::gobuster as gobuster_tool;
+use crate::oraculo::chamar_gemini_com_timeout;
 use indicatif::{ProgressBar, ProgressStyle};
+use serde_json::json;
 use std::env;
-use std::io::{self};
+use std::io;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
-    let pb = ProgressBar::new_spinner(); // Spinner pra gente ver rodando
+    let pb = ProgressBar::new_spinner();
 
     if args.len() > 1 {
-        // Modo "um comando e vaza"
-        let consulta_completa = args[1..].join(" ");
-        processar_solicitacao(&consulta_completa, &pb).await;
+        // "One command and exit" mode
+        let full_query = args[1..].join(" ");
+        process_request(&full_query, &pb).await;
     } else {
-        // Modo interativo
-        println!("Ei, cara! Modo interativo do Fenrir.");
-        println!("Manda a braba (ou 'sair' pra vazar).");
-        interativo(&pb).await;
+        // Interactive mode
+        println!("Welcome to Fenrir Interactive Mode.");
+        println!("Enter your command or 'exit' to quit.");
+        interactive_mode(&pb).await;
     }
 }
-
-async fn interativo(pb: &ProgressBar) {
+// desgrassa da puta que me pariu nessa porra caralho buceta deppois eu termino 
+async fn interactive_mode(pb: &ProgressBar) {
     let stdin = io::stdin();
     let mut input_buffer = String::new();
 
     loop {
         input_buffer.clear();
         match stdin.read_line(&mut input_buffer) {
-            Ok(0) => break, // Fim da entrada (Ctrl+D)
+            Ok(0) => break,
             Ok(_) => {
-                let trimado = input_buffer.trim().to_lowercase();
-                if trimado.is_empty() {
+                let trimmed_input = input_buffer.trim().to_lowercase();
+                if trimmed_input.is_empty() {
                     continue;
                 }
-                if trimado == "sair" || trimado == "exit" {
-                    println!("Falou, parceiro! Até a próxima.");
+                if trimmed_input == "exit" {
+                    println!("Exiting. Goodbye!");
                     break;
                 }
 
-                // Se não for "sair", é pro Oráculo!
-                processar_solicitacao(&trimado, pb).await;
-                println!("\nPróxima? (ou 'sair' pra vazar)");
+                process_request(&trimmed_input, pb).await;
+                println!("\nEnter your next command (or 'exit' to quit):");
             }
             Err(e) => {
-                eprintln!("Oxe! Deu erro lendo sua entrada: {}", e);
+                eprintln!("Error reading input: {}", e);
                 break;
             }
         }
     }
 }
-
-// --- O CÉREBRO DO FENRIR ---
-// O main.rs agora só "orquestra".
-// Ele chama o Oráculo, depois chama o Executor.
-async fn processar_solicitacao(consulta: &str, pb: &ProgressBar) {
+// --- MAIN ORACLE → EXECUTOR FLOW ---
+async fn process_request(query: &str, pb: &ProgressBar) {
     pb.set_style(
         ProgressStyle::default_spinner()
-            .tick_strings(&["VAI", "CORNO!", "PENSE", "DESGRAÇA!", "...", "VAI", "LOGO", "CARALHO!", "(ノ°Д°）ノ", "┻━┻", "...", "VAI", "CORNO!"])
-            .template("{spinner:.bold.yellow} {msg}")
+            .tick_strings(&["/", "-", "\\", "|", "+", "*"])
+            .template("{spinner:.bold.blue} {msg}")
             .unwrap(),
     );
-    pb.set_message("Chamando o Oráculo (Gemini)...");
-    pb.enable_steady_tick(Duration::from_millis(150));
+    pb.set_message("Calling the Oracle (Gemini)...");
+    pb.enable_steady_tick(Duration::from_millis(120));
 
-    // 1. CHAMA O ORÁCULO (que agora tá em 'src/oraculo.rs')
-    match oraculo::chamar_gemini_com_timeout(consulta).await {
-        Ok(task) => {
-            // Oráculo respondeu!
-            pb.finish_with_message("! Oráculo respondeu!");
+    // 1. CALL THE ORACLE
+    match chamar_gemini_com_timeout(query).await {
+        Ok(mut task) => {
+            pb.finish_with_message("Oracle has responded!");
 
-            // 2. CHAMA O EXECUTOR (log_task)
-            if let Err(e) = executor::log_task(&task) {
-                eprintln!("Xii, deu erro pra logar a tarefa: {}", e);
+            // 2. LOG THE TASK
+            if let Err(e) = log_task(&task) {
+                eprintln!("Error logging the task: {}", e);
             }
 
-            // 3. CHAMA O EXECUTOR (Freio de Mão)
-            let acao_proposta = format!(
-                "O Oráculo sugeriu: '{}' \nTipo: '{}' \nComando: '{}' \nArquivo: '{}'",
-                task.ia_explanation,
-                task.task_type,
-                task.command_to_run.as_deref().unwrap_or("N/A"),
-                task.target_path.as_deref().unwrap_or("N/A")
-            );
+            // 3. RECURSIVE TASK FILLING WITH CONFIRMATION LOOP
+            // TENTE POR SUA CONTA E RISCO SE FUDER ESSA PORRA NA TEORIA FUNCIONAVA
+            task = fill_task_recursively(task).await;
 
-            println!("\n--- PROPOSTA DO ORÁCULO ---");
-            println!("{}", acao_proposta);
-            println!("-----------------------------");
+            // 4. CHECK IF TASK WAS CONFIRMED
+            if !task.is_confirmed {
+                println!("Task was not confirmed. Exiting.");
+                return;
+            }
 
-            let confirmacao = executor::ask_for_confirmation("Executa essa porra? (s/n):").await;
+            // 5. EXECUTE THE TASK WITH TIME-BASED SEGMENTATION
+            println!("\n⏱️  Executing task with time segment: {:?}", task.time_segment);
 
-            if confirmacao {
-                println!("Ok, segurando o volante...");
-
-                // 4. CHAMA O EXECUTOR (As "Mãos")
-                match task.task_type.as_str() {
-                    "execute_command" => {
-                        if let Some(cmd) = task.command_to_run {
-                            executor::handle_execute_command(&cmd);
-                        } else {
-                            eprintln!("Erro: Oráculo mandou 'execute_command' mas não mandou o comando!");
-                        }
-                    }
-                    "open_editor" => {
-                        if let (Some(path), Some(app)) = (task.target_path, task.application) {
-                            executor::handle_open_editor(&app, &path);
-                        } else {
-                            eprintln!("Erro: Oráculo mandou 'open_editor' mas faltou o app ou o arquivo!");
-                        }
-                    }
-                    "unknown" | _ => {
-                        println!("O Oráculo não entendeu o que fazer. (Disse: '{}')", task.ia_explanation);
+            match task.task_type.as_str() {
+                "gobuster" => {
+                    // Only run gobuster when a URL/target is provided.
+                    if let Some(url) = task.target_path {
+                        let args = json!({ "url": url });
+                        gobuster_tool::run(Some(args));
+                    } else {
+                        println!("No URL provided for gobuster; using normal search instead.");
+                        println!("Falling back to standard handling for this request.");
                     }
                 }
-            } else {
-                println!("Ação cancelada. Sabonetou!");
+                
+                "execute_command" => {
+                    if let Some(cmd) = task.command_to_run {
+                        let args = json!({ "cmd": cmd });
+                        handle_execute_command_with_timeout(Some(args), task.time_segment).await;
+                    } else {
+                        eprintln!("Error: Oracle suggested 'execute_command' but provided no command!");
+                    }
+                }
+                "open_editor" => {
+                    if let (Some(path), Some(app)) = (task.target_path, task.application) {
+                        let args = json!({ "app": app, "path": path });
+                        handle_open_editor(Some(args));
+                    } else {
+                        eprintln!("Error: Oracle suggested 'open_editor' but is missing the application or file path!");
+                    }
+                }
+                "unknown" | _ => {
+                    println!("The Oracle could not determine a clear action. (Said: '{}')", task.ia_explanation);
+                }
             }
         }
         Err(e) => {
-            // Deu ruim no Oráculo
-            pb.finish_with_message("! DEU RUIM!");
-            eprintln!("Ops! Deu ruim na comunicação com o Oráculo: {}", e);
+            pb.finish_with_message("Request failed!");
+            eprintln!("Error communicating with the Oracle: {}", e);
         }
     }
 }
